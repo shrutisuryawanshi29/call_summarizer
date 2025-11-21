@@ -4,6 +4,7 @@ import numpy as np
 import threading
 import queue
 import time
+import logging
 from typing import Optional, Callable, List
 from enum import Enum
 
@@ -40,6 +41,7 @@ class Transcriber:
         self.api_key = api_key
         self.model = model
         self.on_transcription = on_transcription
+        self.logger = logging.getLogger("CallSummarizer.transcription")
         
         self._is_running = False
         self._audio_queue = queue.Queue()
@@ -70,8 +72,12 @@ class Transcriber:
             return True
         
         # Initialize local transcriber if needed
-        if self._local_transcriber and not self._local_transcriber.initialize():
-            return False
+        if self._local_transcriber:
+            self.logger.info(f"Initializing local Whisper transcriber with model: {self.model}")
+            if not self._local_transcriber.initialize():
+                self.logger.error("Failed to initialize local Whisper transcriber")
+                return False
+            self.logger.info("Local Whisper transcriber initialized successfully")
         
         self._is_running = True
         self._transcription_thread = threading.Thread(
@@ -79,6 +85,7 @@ class Transcriber:
             daemon=True
         )
         self._transcription_thread.start()
+        self.logger.info(f"Transcription worker thread started (method: {self.method.value})")
         return True
     
     def stop(self):
@@ -109,6 +116,7 @@ class Transcriber:
                 audio_to_process = np.concatenate(self._audio_buffer)
                 self._audio_buffer = []  # Clear buffer for next batch
                 self._audio_queue.put(audio_to_process)
+                self.logger.debug(f"Audio chunk queued for transcription ({len(audio_to_process)} samples)")
     
     def _transcription_worker(self):
         """Worker thread that processes audio chunks from the queue.
@@ -144,7 +152,7 @@ class Transcriber:
                 # No audio to process yet, continue waiting
                 continue
             except Exception as e:
-                print(f"Error in transcription worker: {e}")
+                self.logger.error(f"Error in transcription worker: {e}", exc_info=True)
                 time.sleep(0.1)  # Brief pause before retrying
     
     def _transcribe_openai_api(self, audio: np.ndarray) -> Optional[str]:
@@ -195,10 +203,10 @@ class Transcriber:
                 return transcript.text.strip() if transcript.text else None
                 
         except ImportError:
-            print("openai package not installed. Install with: pip install openai")
+            self.logger.error("openai package not installed. Install with: pip install openai")
             return None
         except Exception as e:
-            print(f"Error in OpenAI API transcription: {e}")
+            self.logger.error(f"Error in OpenAI API transcription: {e}", exc_info=True)
             return None
     
     def _transcribe_openai_realtime(self, audio: np.ndarray) -> Optional[str]:

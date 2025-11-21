@@ -8,6 +8,7 @@ import queue
 from typing import Optional, Callable, Tuple
 from collections import deque
 import time
+import logging
 
 
 class AudioCapture:
@@ -38,6 +39,7 @@ class AudioCapture:
         self.device_id = device_id
         self.on_audio_data = on_audio_data
         self.system = platform.system()
+        self.logger = logging.getLogger("CallSummarizer.audio")
         
         self._stream: Optional[sd.InputStream] = None
         self._is_capturing = False
@@ -48,6 +50,7 @@ class AudioCapture:
         self._silence_buffer = deque(maxlen=int(self.SILENCE_DURATION * self.SAMPLE_RATE))
         self._last_audio_time = time.time()
         self._is_silent = False
+        self._audio_chunks_received = 0
     
     def start(self) -> bool:
         """Start audio capture.
@@ -59,6 +62,17 @@ class AudioCapture:
             return True
         
         try:
+            # On macOS, explicitly trigger microphone permission request
+            # by querying devices - this will show the permission dialog if needed
+            if self.system == "Darwin":
+                try:
+                    # This call will trigger the macOS microphone permission dialog
+                    # if permission hasn't been granted yet
+                    _ = sd.query_devices(kind='input')
+                    self.logger.info("Microphone permission check triggered")
+                except Exception as e:
+                    self.logger.warning(f"Error querying input devices (may need permission): {e}")
+            
             # Configure device
             device_info = None
             if self.device_id is not None:
@@ -110,8 +124,8 @@ class AudioCapture:
                         else:
                             raise Exception("No input-capable audio device found")
                     except Exception as e:
-                        print(f"Error: No input-capable audio device available. {e}")
-                        print("Tip: Install BlackHole for system audio capture, or use a microphone.")
+                        self.logger.error(f"No input-capable audio device available: {e}")
+                        self.logger.info("Tip: Install BlackHole for system audio capture, or use a microphone.")
                         return False
             
             # Create stream
@@ -128,14 +142,19 @@ class AudioCapture:
             self._stream.start()
             self._is_capturing = True
             self._last_audio_time = time.time()
+            self._audio_chunks_received = 0
+            
+            device_name = device_info.get('name', 'Unknown') if device_info else 'Default'
+            self.logger.info(f"Audio capture started successfully on device: {device_name} (ID: {self.device_id})")
             
             return True
             
         except Exception as e:
             error_msg = f"Error starting audio capture: {e}"
-            print(error_msg)
+            self.logger.error(error_msg, exc_info=True)
             if self.system == "Darwin":
-                print("macOS Tip: For system audio, install BlackHole or use a microphone device.")
+                self.logger.info("macOS Tip: For system audio, install BlackHole or use a microphone device.")
+                self.logger.info("Also check System Settings → Privacy & Security → Microphone permissions")
             return False
     
     def stop(self):
@@ -167,10 +186,14 @@ class AudioCapture:
             status: Status flags (errors, underruns, etc.)
         """
         if status:
-            print(f"Audio callback status: {status}")
+            self.logger.warning(f"Audio callback status: {status}")
         
         if not self._is_capturing:
             return
+        
+        self._audio_chunks_received += 1
+        if self._audio_chunks_received == 1:
+            self.logger.info("First audio chunk received - audio capture is working")
         
         # Convert multi-channel audio to mono by averaging channels
         audio_data = indata.copy()
@@ -201,7 +224,7 @@ class AudioCapture:
             try:
                 self.on_audio_data(audio_data)
             except Exception as e:
-                print(f"Error in audio callback: {e}")
+                self.logger.error(f"Error in audio callback: {e}", exc_info=True)
     
     def is_silent(self) -> bool:
         """Check if audio is currently silent.
