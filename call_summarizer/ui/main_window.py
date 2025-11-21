@@ -68,6 +68,9 @@ class MainWindow(QMainWindow):
         self.auto_detect_timer.timeout.connect(self.check_meeting_status)
         self.mini_summary_timer = QTimer()
         self.mini_summary_timer.timeout.connect(self.generate_mini_summary)
+        self.audio_check_timer = QTimer()
+        self.audio_check_timer.timeout.connect(self.check_audio_reception)
+        self._audio_received_since_start = False
         
         # UI
         self.init_ui()
@@ -264,6 +267,17 @@ class MainWindow(QMainWindow):
     
     def setup_audio(self):
         """Set up audio capture."""
+        # On macOS, try to trigger microphone permission dialog early
+        # by querying audio devices when the app starts
+        if sys.platform == "darwin":
+            try:
+                import sounddevice as sd
+                # This will trigger the permission dialog if not already granted
+                _ = sd.query_devices(kind='input')
+                self.logger.info("Audio device query triggered (may request microphone permission)")
+            except Exception as e:
+                self.logger.debug(f"Audio device query: {e}")
+        
         device_id = None
         device_name = self.settings.get('audio_device', '')
         
@@ -392,6 +406,11 @@ class MainWindow(QMainWindow):
         # Start mini-summary timer (every 30 seconds)
         self.mini_summary_timer.start(30000)
         
+        # Start a diagnostic timer to check if audio is being received
+        self.audio_check_timer = QTimer()
+        self.audio_check_timer.timeout.connect(self.check_audio_reception)
+        self.audio_check_timer.start(5000)  # Check after 5 seconds
+        
         self.logger.info("Transcription started")
     
     def stop_transcription(self):
@@ -418,10 +437,15 @@ class MainWindow(QMainWindow):
                 daemon=True
             ).start()
         
+        # Stop audio check timer
+        if hasattr(self, 'audio_check_timer'):
+            self.audio_check_timer.stop()
+        
         # Update UI
         self.is_transcribing = False
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self._audio_received_since_start = False
         
         self.status_label.setText("Stopped")
         self.status_bar.showMessage("Transcription stopped")
@@ -435,6 +459,7 @@ class MainWindow(QMainWindow):
             audio_data: Audio numpy array
         """
         if self.transcriber and self.is_transcribing:
+            self._audio_received_since_start = True
             self.transcriber.add_audio(audio_data)
     
     def on_transcription_callback(self, text: str, timestamp: float):
@@ -644,6 +669,32 @@ class MainWindow(QMainWindow):
                         QTimer.singleShot(2000, lambda: self._try_auto_start(app_name))
         except Exception as e:
             self.logger.error(f"Error in meeting detection: {e}")
+    
+    def check_audio_reception(self):
+        """Check if audio is being received after starting transcription."""
+        if not self.is_transcribing:
+            return
+        
+        if not self._audio_received_since_start:
+            # Audio not being received - show helpful error message
+            error_msg = (
+                "No audio detected. Possible issues:\n\n"
+                "1. Microphone permissions not granted\n"
+                "   → Go to System Settings → Privacy & Security → Microphone\n"
+                "   → Enable access for this app\n\n"
+                "2. Wrong audio device selected\n"
+                "   → Go to Settings → Select correct audio device\n"
+                "   → Try 'MacBook Air Microphone' for microphone input\n\n"
+                "3. For system audio capture, install BlackHole\n"
+                "   → https://github.com/ExistentialAudio/BlackHole"
+            )
+            QMessageBox.warning(self, "No Audio Detected", error_msg)
+            self.logger.warning("No audio received after 5 seconds - checking permissions and device")
+            self.audio_check_timer.stop()  # Only show once
+        else:
+            # Audio is working, stop the check timer
+            self.audio_check_timer.stop()
+            self.logger.info("Audio reception confirmed - transcription is working")
     
     def _try_auto_start(self, app_name: str):
         """Try to auto-start transcription."""
