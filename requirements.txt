@@ -1,0 +1,25 @@
+# Core GUI Framework
+PySide6>=6.6.0
+
+# Audio Capture
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Process Detection
+psutil>=5.9.0
+
+# Transcription
+openai>=1.12.0
+openai-whisper>=20231117
+faster-whisper>=1.0.0  # Faster local transcription (2-4x faster than openai-whisper)
+webrtcvad>=2.0.10
+
+# Summarization
+google-generativeai>=0.3.0
+
+# PDF Export
+reportlab>=4.0.0
+
+# Windows-specific (optional, install separately if needed)
+# pywin32>=306; sys_platform == "win32"
+
